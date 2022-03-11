@@ -1,0 +1,276 @@
+---
+title: "Differential Expression of CTAs"
+author: "Jenny Smith"
+date: "June 23, 2017"
+output: html_document
+---
+
+
+
+
+```{r setup}
+library(knitr)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, fig.align='center')
+knitr::opts_knit$set(root.dir = '~/RNA_seq_Analysis/2017.06.23_DEGs_CTAs/')
+```
+
+
+```{r message = FALSE, warning=FALSE}
+library(stringr)
+library(magrittr)
+library(ggplot2)
+getwd()
+```
+
+
+```{r}
+source("~/scripts/RNAseq_Analysis/DifferentialExpn_PathwayAnalysis/DifferentialExpressionPipeline.r")
+```
+
+
+```{r}
+calcDE.CTAs <-function(expData, g1, g2,GOI, logCPM=NULL,Trend=TRUE) {
+  # expnData is a matrix or data frame with the raw counts. Patient IDs as colnames, genes as rownames
+  # g1,g2 are the patient IDs for each group
+  #logCPM is whether to log2 CPM normalize the raw counts.
+  #GOI is a character vector genes of interest to subset before top table(for enhanced BH p val adjustment using a subset of genes)
+  library(limma)
+  library(edgeR)
+
+  dge <- DGEList(counts = expData)
+  keep.dge <- rowSums(cpm(dge) >= 1) >  (0.05*ncol(expData))
+  dge <- dge[keep.dge,] #subset for those genes with cmp >= 1 per gene
+  GOI <- intersect(GOI, rownames(dge$counts)) #minimze to those who met the 1CPM criteria
+  
+  if (is.null(logCPM)){
+    dge <- calcNormFactors(dge) #calculate the TMM normalization factors
+    return(dge)
+
+  }else if (logCPM==TRUE){
+    dge <- calcNormFactors(dge) #calculate the normalization factors
+    NormFactors <- dge$samples
+    dge <- cpm(dge, log=TRUE, prior.count = 1) #log2 CPM transformation.
+
+  }else if (logCPM==FALSE){
+    dge <- apply(dge$counts, 2, function(x) log2(x + 1))
+    NormFactors <- "None"
+  }
+
+
+  designMatrix <- matrix(0, nrow=dim(dge)[2] , ncol=2)
+  colnames(designMatrix) <- c("g1","g2")
+  rownames(designMatrix) <- colnames(dge)
+  designMatrix[g1, 1] <- 1
+  designMatrix[g2, 2] <- 1
+
+  fit <- lmFit(dge,designMatrix)
+  tmp <- paste("g1","g2",sep="-") #contrast is ~ log2(mean(g1)) - log2(mean(g2)) per gene
+
+  cont.matrix <- makeContrasts(contrasts=tmp,
+                               levels=designMatrix)
+
+  fit2<-contrasts.fit(fit, cont.matrix)
+  fit2<-eBayes(fit2, trend=Trend)[GOI, ]
+  DE<-topTable(fit2,adjust.method="BH",sort.by="P",
+               number=20000) #want all of the results because they are subset to GOI already 
+
+
+  list <- list(dge,NormFactors, designMatrix, DE)
+  names(list) <- c("dge","NormFactors", "design", "DE")
+
+  return(list)
+}
+```
+
+
+```{r}
+twoGroups_DEGs.CTAs <- function(expnData, clinData, col, ref, GOI, logCPM=TRUE,BM=FALSE){
+  # expnData is a matrix or data frame with the raw counts. Patient IDs as colnames, genes as rownames
+  #clindata has patient IDs as rownames. 
+  #col is a character string of the factor column of interest
+  #ref is the character strign of the reference group level (eg BM, Neg, or control)
+  library(magrittr)
+  library(genefilter)
+  
+  
+  #remove unknown categories from the datasets since only want yes/no or 0/1 groups
+  rmUnknowns <- function(clinData, cols){
+    removeUnknowns <- clinData
+    
+    for (i in 1:length(cols)){
+      removeUnknowns <- removeUnknowns[!grepl("Unknown",removeUnknowns[, cols[i]]), ] 
+    }
+    return(removeUnknowns)
+  }
+  
+  dataName <- substitute(expnData)
+  variantName <- col
+  # print(name)
+  clinData <- rmUnknowns(clinData, col)
+  groups <- GroupIDs(clinData, col) #list of patient IDs, one for each group
+  
+  #Define Groups to compare based on group IDs from clinical data. Intersect with expression matrix to subset. 
+  if (BM == TRUE){
+    BM <- grep("^BM", colnames(expnData), value = TRUE)
+    GroupB <- BM #select the reference group 
+    GroupA <- groups[[which(names(groups) != ref)]] %>% intersect(. , colnames(expnData)) #the second group (mutant, AML, treated, etc)
+  }else{
+    GroupB <- groups[[ref]] %>% intersect(. , colnames(expnData)) #select the reference group (eg No, normal, wt, control, etc.) Must be a character(level) from the column of clinData selected. 
+    GroupA <- groups[[which(names(groups) != ref)]] %>% intersect(. , colnames(expnData)) #the second group (mutant, AML, treated, etc)
+  }
+  
+  
+  if (any(lapply(list(GroupA,GroupB), length) < 3)){
+    list <- list(expnData, clinData, GroupA,GroupB)
+    names(list) <- c("InputExpnData", "InputClinData", "CompGroup", "RefGroup")
+    return(list)
+  }
+
+  phenoVector <- phenoVectors(GroupA, GroupB)
+
+  if (identical(GroupB,BM)){
+    clinData <- as.data.frame(phenoVector) %>% set_colnames(., "Group")
+    col <- "Group"
+  }else{
+    clinData = clinData
+  }
+
+  # return(phenoVector)
+  #subset and order the dataframe.
+  expnData <- expnData[,match(c(GroupA, GroupB), colnames(expnData))] #mutant, then WT
+
+  # return(phenoVector)
+  # Calculate Differential Expression
+  print(c("logCPM", logCPM))
+  DE <- calcDE.CTAs(expnData,GroupA, GroupB, GOI=GOI, logCPM=logCPM, Trend = TRUE) #mutant - wild type. logCPM the counts
+  # NOTE: I included a more stringent filter here, so 5% of samples must have logCPM of greater than 1 for inclusion in analysis
+  # this usually results in ~18,000 genes included in each analysis.
+
+  if (nrow(DE$DE) < 1){
+    PCA <- plotPCA(expnData, clinData, col)
+    list <- list(clinData, phenoVector, expnData, DE, PCA)
+    names(list) <- c("InputClinData", "phenovector", "InputExpnMatrix", "DE","PCA")
+    return(DE)
+  }else{
+
+    #Top Varied genes
+    genes <- rownames(expnData[order(rowVars(expnData),decreasing=TRUE), ])[1:500]
+
+    #Unsupervised Heirachrach clustering
+    dends_DE <- dge_dendrograms(expnData, phenoVector, rownames(DE$DE), method="ward.D2") #dendrograms based on all differentially expressed genes.
+    colorBar <- ifelse(phenoVector == "GroupB", "black", "firebrick")
+    # title <- paste(variantName, dataName, sep=" ")
+    title <- variantName
+    heatmap <- basicHeatmap(dends_DE$TMMCPM, dends_DE$c2, dends_DE$c1,colorBar, title=title)
+
+    #Unconstrained Cluster Analysis on log2CPM counts
+    # PCoA
+    MDS <- plotPCoA((DE$dge),clinData,genes,col)
+    # PCA
+    PCA <- plotPCA(DE$dge, clinData, col,log2=TRUE)
+
+    #return the objects
+    list <- list(clinData, phenoVector, expnData, DE, genes, dends_DE, heatmap, MDS, PCA)
+    names(list) <- c("InputClinData", "phenovector", "InputExpnMatrix", "DE", "topVargenes", "dends_DE", "Heatmap", "MDS", "PCA")
+
+
+    return(list)
+  }
+}
+
+```
+
+#Read in the CTAs of Interest
+```{r}
+CTAs <- read.csv("CTA_genes_found_in_low_depth_RNA_seq.csv", stringsAsFactors = FALSE)$geneSymbol
+
+# dim(CTAs)
+```
+
+
+```{r}
+head(CTAs)
+```
+
+
+#Raw Counts
+
+```{r}
+counts <- get(load("RNAseq_Counts_HD_LD_batchCorrected.RData"))
+sapply(counts, dim)
+```
+
+#ClinData
+
+```{r}
+clinData <- read.csv("~/reference_mapping-files/TARGET_AML_current_asof_june30_2016_UPDATED_RhondaEdit_2017.06.08.csv", stringsAsFactors = FALSE, row.names=1)
+
+dim(clinData)
+```
+
+#Perform Differential Expression
+
+
+
+
+```{r message=FALSE,warning=FALSE}
+# pdf(file="TARGET_AML_AMLvsNormalBM_CTAs_DEGs.pdf")
+DEGs.CTAs <- twoGroups_DEGs.CTAs(counts$LD, clinData, col="X", ref="NA", GOI = CTAs, logCPM = TRUE, BM = TRUE)
+# dev.off()
+```
+
+
+```{r}
+upReg <- rownames(DEGs.CTAs$DE$DE[DEGs.CTAs$DE$DE$logFC >= 1 & DEGs.CTAs$DE$DE$adj.P.Val <= 0.05, ])
+
+dends_UpReg <- dge_dendrograms(DEGs.CTAs$InputExpnMatrix, DEGs.CTAs$phenovector, upReg, method="ward.D2")
+```
+
+
+```{r}
+colors <- ifelse(DEGs.CTAs$phenovector == "GroupA", "firebrick", "black")
+# pdf(file="TARGET_AML_AMLvsNormalBM_CTAs_DEGS_UpReg_heatmap.pdf")
+basicHeatmap(dends_UpReg$TMMCPM, dends_UpReg$c2, dends_UpReg$c1, colors = colors , title = " ")
+# dev.off()
+```
+
+
+```{r}
+summary(DEGs.CTAs)
+```
+
+
+```{r}
+# pdf(file="TARGET_AML_AMLvsNormalBM_CTAs_DEGs_MDSplot.pdf")
+DEGs.CTAs$MDS$plot$labels$title <- "Multidimensional Scaling of TARGET AML: Most Varied Genes"
+DEGs.CTAs$MDS$plot
+# dev.off()
+```
+
+```{r}
+# pdf(file="TARGET_AML_AMLvsNormalBM_CTAs_DEGs_PCAplot.pdf")
+DEGs.CTAs$PCA$pca_plot
+# dev.off()
+```
+
+```{r}
+range(DEGs.CTAs$DE$NormFactors$norm.factors)
+```
+
+```{r}
+dim(DEGs.CTAs$DE$dge)
+sum(rownames(DEGs.CTAs$DE$dge) %in% CTAs) #Only 53 had 1 cpm in more than 5% of samples
+```
+
+```{r}
+dim(DEGs.CTAs$DE$DE[DEGs.CTAs$DE$DE$adj.P.Val < 0.05, ])  #32 are significally differentially expressed
+```
+
+```{r}
+# write.csv(DEGs.CTAs$DE$DE, "TARGET_AML_AMLvsNormalBM_CTAs_DEGs.csv")
+```
+
+
+
+
+

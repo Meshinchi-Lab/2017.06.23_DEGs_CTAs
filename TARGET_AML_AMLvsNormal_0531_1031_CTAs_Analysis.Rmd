@@ -1,0 +1,367 @@
+---
+title: "Differential Expression of CTAs"
+author: "Jenny Smith"
+date: "October 19, 2017"
+output: html_document
+---
+
+
+
+
+```{r setup}
+library(knitr)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, fig.align='center', fig.height = 10, fig.width = 10)
+knitr::opts_knit$set(root.dir = '~/RNA_seq_Analysis/2017.06.23_DEGs_CTAs/')
+```
+
+
+```{r message = FALSE, warning=FALSE}
+library(stringr)
+library(magrittr)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(tibble)
+getwd()
+```
+
+
+```{r}
+source("~/scripts/RNAseq_Analysis/DifferentialExpn_PathwayAnalysis/DifferentialExpressionPipeline.r")
+```
+
+
+
+
+
+#Read in the CTAs of Interest
+
+```{r}
+CTAs <- read.csv("CTAs/CTA_genes_found_in_low_depth_RNA_seq.csv", stringsAsFactors = FALSE)$geneSymbol
+
+length(CTAs)
+```
+
+
+```{r}
+head(CTAs)
+```
+
+
+#Raw Counts
+
+```{r}
+cts.0531 <- get(load("ExpressionData/RNAseq_Counts_HD_LD_batchCorrected.RData"))$LD
+head(cts.0531[,1:5])
+```
+
+
+```{r}
+cts.1031 <- read.csv("ExpressionData/TARGET_AML_AAML1031_dupGenesRemoved_FractionalCounts.csv", stringsAsFactors = FALSE, row.names = 1)
+# colnames(cts.1031) <- str_split_fixed(colnames(cts.1031), pattern = "\\.", n=2)[,1]
+head(cts.1031[,1:5])
+```
+
+
+#TPM Values 
+
+```{r}
+tpm.1031 <- read.csv("ExpressionData/TARGET_AML_AAML1031_dupGenesRemoved_TPM.csv", 
+                     stringsAsFactors = FALSE, row.names = 1)
+head(tpm.1031[,1:5])
+```
+
+```{r}
+tpm.CTAs <- tpm.1031 %>%
+  mutate(gene=rownames(.)) %>%
+  select(gene, everything()) %>%
+  filter(gene %in% CTAs)
+
+dim(tpm.CTAs)
+```
+
+```{r}
+# write.csv(tpm.CTAs, "TARGET_AML_1031_CTAsOnly_TPM.csv", row.names = FALSE)
+```
+
+
+#ClinData
+
+```{r}
+CDE.0531 <- read.csv("~/reference_mapping-files/TARGET_AML_current_asof_june30_2016_UPDATED_RhondaEdit_2017.06.08.csv", stringsAsFactors = FALSE, row.names=1)
+
+dim(CDE.0531)
+```
+
+
+```{r}
+CDE.1031 <- read.csv("~/reference_mapping-files/TARGET_AML_AAML1031_merged_CDE_Cleaned_28Sept2017.csv", stringsAsFactors = FALSE,row.names = 1)
+
+dim(CDE.1031)
+```
+
+```{r}
+CDE.1031 <- CDE.1031 %>%
+  mutate(X=rep("CDE", nrow(CDE.1031))) %>%
+  filter(! is.na(USI)) %>%
+  column_to_rownames(var="USI")
+
+# head(CDE.1031)
+CDE.1031
+```
+
+
+```{r}
+Fusions <- read.csv("AAML1031_CDEs_with_fusions_and_updated_risk_groups_11302017.csv",
+                    stringsAsFactors = FALSE)
+
+head(Fusions)
+```
+
+
+
+#Perform Differential Expression
+
+```{r message=FALSE}
+CTAs.0531 <- twoGroups_DEGs(expnData = cts.0531,
+                            clinData = CDE.0531, 
+                            col = "X", 
+                            ref = "",
+                            GOI=CTAs, 
+                            logCPM = TRUE, 
+                            BM = TRUE)
+
+summary(CTAs.0531)
+```
+
+
+```{r}
+head(extract_DEGs(CTAs.0531))
+```
+
+```{r message=FALSE}
+# tiff(filename = "TARGET_AML_1031_allExpressed_CTAs_Heatmap.tiff", width = 10, height = 10,units = "in", res=600)
+CTAs.1031 <- twoGroups_DEGs(expnData = cts.1031, 
+                            clinData = CDE.1031,
+                            col="X", 
+                            ref="", 
+                            GOI=CTAs,
+                            logCPM = TRUE, 
+                            BM=TRUE)
+# dev.off()
+summary(CTAs.1031)
+
+```
+
+
+```{r}
+dim(CTAs.1031$DE$dge) #19,750 genes with 1 CPM > 5% of AML samples. 
+dim(CTAs.1031$DE$DE) #59 expressed CTAs (these have not been filtered for sig or DE)
+# save(CTAs.1031, file="TARGET_AML_1031_AML_vs_NBM_CTAsDE.RData")
+```
+
+```{r}
+load("TARGET_AML_1031_AML_vs_NBM_CTAsDE.RData")
+```
+
+```{r}
+DE <- extract_DEGs(CTAs.1031)
+head(DE)
+```
+
+
+```{r}
+# write.csv(DE, "TARGET_AML_1031_AMLvsNormalBM_CTAs_DEGs.csv", row.names=FALSE)
+```
+
+
+
+#Quality Control 
+
+
+
+```{r}
+# tiff(filename = "TARGET_AML_1031_AMLvsNormal_CTAs_PCA.tiff", width = 10, height = 10,units = "in", res=600)
+extract_PCA(CTAs.1031)
+# dev.off()
+```
+
+```{r}
+extract_PCA(CTAs.0531)
+```
+
+
+
+#Heatmaps with upregulated genes
+
+
+```{r}
+up <- DE %>%
+  filter(logFC >= 1 & adj.P.Val <= 0.05)
+
+dim(up)
+```
+
+
+```{r}
+colors <- ifelse(CTAs.1031$phenovector == "GroupA","firebrick", "black")
+d.up <- dge_dendrograms(cts.1031,CTAs.1031$phenovector, up$gene, method="ward.D2")
+```
+
+
+```{r}
+# tiff(filename = "TARGET_AML_1031_upregulated_CTAs_Heatmap.tiff", width = 12, height = 10,units = "in", res=600)
+basicHeatmap(d.up$TMMCPM, d.up$c2, d.up$c1, colors, "Up-regulated CTAs in 1031")
+# dev.off()
+```
+
+
+
+#Annotation Heatmap
+
+KMT2A (can group all fusions that start with KMT2A), NUP98-NSD1, t(8;21), and Inv(16), 
+
+```{r}
+source("~/scripts/RNAseq_Analysis/DifferentialExpn_PathwayAnalysis/Heatmaps_Function.r")
+```
+
+
+```{r}
+# table(Fusions$MOLECULAR.GROUP.FOR.CLUSTERING)
+```
+
+```{r}
+fuscols <- function(col,pattern){
+  ifelse(grepl(pattern, col), "Yes", "No") #There are negatives bc this only contains those w/ RNAseq Fusions 
+}
+
+annoDF <- Fusions %>%
+  select(USI, MOLECULAR.GROUP.FOR.CLUSTERING) %>%
+  mutate(NUP98.NSD1=fuscols(MOLECULAR.GROUP.FOR.CLUSTERING, "NUP98-NSD1"),
+         KMT2A=fuscols(MOLECULAR.GROUP.FOR.CLUSTERING, "KMT2A"),
+         INV.16=fuscols(MOLECULAR.GROUP.FOR.CLUSTERING, "Inv\\(16\\)"),
+         T.8.21=fuscols(MOLECULAR.GROUP.FOR.CLUSTERING, "RUNX1-RUNX1T1")) %>%
+  select(-MOLECULAR.GROUP.FOR.CLUSTERING) %>%
+  column_to_rownames("USI")
+  
+annoDF <- matchMatrix(annoDF, d.up$TMMCPM)
+
+head(annoDF)
+# dim(annoDF) #1,100 samples
+```
+
+```{r}
+sapply(annoDF, table) #the Notavailable are 62 NBMs and 3 w.o fusion data 
+```
+
+
+```{r}
+cc <- list(NUP98.NSD1=c("No"="wheat"  ,"Unknown"="#4DAF4A", "Yes"= "royalblue1" ),
+           KMT2A=c("No"="wheat" ,"Unknown"="#4DAF4A", "Yes"="royalblue1"), 
+           INV.16=c("No"="wheat" ,"Unknown"="#4DAF4A", "Yes"="royalblue1"),
+           T.8.21 =c("No"="wheat2" ,"Unknown"="#4DAF4A", "Yes"="royalblue1"))
+```
+
+
+
+```{r fig.width=16}
+# tiff("TARGET_AML_1031_CTAs_UpReg_AnnotationHeatmap.tiff", height = 10, 
+     # width = 16, units="in", res=600)
+annotationHeatmap(d.up$TMMCPM, d.up$c2, d.up$c1, annoDF, cc, main="CTAs in 1031")
+# dev.off()
+```
+
+
+#Heatmap with 1031 and all CTAs
+
+```{r}
+Order <- read.csv("pt_order_for_heatmapv2.csv", stringsAsFactors = FALSE)
+head(Order, n=7)
+```
+
+
+ #7 is KDM5B
+ 
+```{r}
+genes <- c(Order$Gene.order[1:6], "KDM5B")
+# CTAs.ordered <- unique(c(genes,CTAs))
+
+gene.Order <- c(genes, setdiff(up$gene,genes))
+# CTAs.ordered[1:10]
+gene.Order
+```
+
+```{r}
+CTAs.tpm<- tpm.1031[gene.Order, Order$Order.of.pts.and.controls]
+CTAs.tpm <- log2(CTAs.tpm + 1)
+
+# CTAs.cts <- cts.1031[gene.Order,Order$Order.of.pts.and.controls]
+
+#For presece vs absense 
+# CTAs.tpm[CTAs.tpm < 10] <- 0
+# CTAs.tpm[CTAs.tpm > 10] <- 10
+
+head(CTAs.tpm[,1:5])
+# dim(CTAs.tpm) #10 by 1111
+
+
+# head(CTAs.cts[,1:5])
+# dim(CTAs.cts)
+```
+
+```{r}
+pheno <- ifelse(grepl("^BM|^RO", colnames(CTAs.tpm)),"NBM", "AML") %>%
+  set_names(colnames(CTAs.tpm)) %>%
+  as.data.frame() %>%
+  set_colnames("Status")
+
+
+head(pheno)
+
+annoColors <- list(Status=c("AML"="blue", "NBM"="black"))
+```
+
+```{r}
+# ggplot2()
+```
+
+
+```{r fig.height=10, fig.width=10}
+# library(NMF)
+
+# colorPal <- colorRampPalette(c("deepskyblue4", "deepskyblue3", "deepskyblue2", "white","red1", "red2", "red3", "red4"))(n=299)
+# colorPal <- colorRampPalette(c("lightskyblue1","deepskyblue2","red3"))(n=299)
+
+# tiff(file="CTAs_1031_Heatmap_RhondaOrderRowCol.tiff",  height = 10, width = 10, res=600, units = "in")
+# par(cex.main=1.5, cex=6, font=2, font.axis=1, lend=1)
+aheatmap(as.matrix(CTAs.tpm), 
+              annCol = pheno,
+             #  annRow = annoRow,
+              annColors = annoColors,
+              Rowv = NA, #option to not order
+              Colv = NA, #option to not order
+              scale="none",
+              color = colorPal, 
+              cexRow=3,
+              cexCol=0.01,
+              # breaks = 0,
+              main="CTA Expression in AAML1031")
+# dev.off()
+# getwd()
+```
+
+
+```{r}
+
+
+```
+
+
+
+
+#Session Information 
+
+```{r}
+sessionInfo()
+```
+
